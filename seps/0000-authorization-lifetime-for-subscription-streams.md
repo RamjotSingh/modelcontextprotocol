@@ -11,15 +11,15 @@
 
 MCP authorizes each HTTP request with an access token, but a `subscriptions/listen` stream is one request that can stay open for hours. The specification does not say what happens when the authorization behind a stream expires, is revoked, or stops covering something the stream carries, so a stream opened with a five-minute token can keep delivering change notifications and task results indefinitely.
 
-This SEP introduces the following chanages
+This SEP introduces the following changes:
 
-- It introduces a `authorizedUntil` as part of the subscription acknowlegement which informs the client when they stream will be closed\paused (paused meaning the connection might not close but no events will be sent).
-- When the server closes the stream for token reasons (expiry, revocation etc) it informs the exact reason to the client using a new `AuthorizationEnded` error, whose `reason` tells the client whether to refresh its token, involve the user, or stop.
-- Makes the subscription call an all-or-nothing call meaning if client lacks access to one or more of the resources supplied to be subscribed to, the entire request is denied instead of partial acceptance along with reason for denial.
+- It introduces an `authorizedUntil` as part of the subscription acknowledgment, which informs the client when the stream will be closed, or paused under the companion SEP (paused meaning the connection might not close but no events will be sent).
+- When the server closes the stream for token reasons (expiry, revocation, etc.), it informs the exact reason to the client using a new `AuthorizationEnded` error, whose `reason` tells the client whether to refresh its token, involve the user, or stop.
+- Makes the subscription call an all-or-nothing call, meaning if the client lacks access to one or more of the resources supplied to be subscribed to, the entire request is denied instead of partially accepted, and the denial names the resources that are not permitted.
 
-The rules apply to every stream, whatever protocol version its client uses. However, older clients might see ordinary disconnects without reason.
+The rules apply to every stream, whatever protocol version its client uses. However, older clients might see ordinary disconnects without a reason.
 
-A companion SEP, will let clients that opt in keep a stream across deadlines.
+A companion SEP, [Subscription Lifecycle][sep-lifecycle], will let clients that opt in keep a stream across deadlines.
 
 ## Motivation
 
@@ -35,7 +35,7 @@ The authorization specification requires an access token on every HTTP request, 
 
 HTTP cannot carry the missing signal. A stream's status line and headers are sent when it starts, so a server cannot answer an open stream with `401`. The only channel left is a JSON-RPC message on the stream.
 
-While servers can disconnect for any reason of their chosing, the existing specification does not clarify that token lifetime should be considered as part of closure of the stream itself. This SEP clarifies the behavior of the server and client when the authorization behind a stream expires, is revoked, or stops covering something the stream carries.
+While servers can disconnect for any reason of their choosing, the existing specification does not clarify that token lifetime should be considered as part of closure of the stream itself. This SEP clarifies the behavior of the server and client when the authorization behind a stream expires, is revoked, or stops covering something the stream carries.
 
 ### Clients cannot tell what a closed stream means
 
