@@ -12,14 +12,26 @@
 
 [Authorization Lifetime for Subscription Streams][sep-lifetime] ends a `subscriptions/listen` stream at each authorization deadline. On its own, that costs every stream a reconnection, a gap, and a resynchronization per token lifetime, and tells a client nothing when it loses access to one of the resources it listed.
 
-This SEP lets clients that opt in keep their streams. Lifecycle notifications, enabled with `lifecycle: true` in the filter, remind the client before the deadline, report entries removed because access to them was lost, and report notifications that may have been missed. A new `subscriptions/update` request re-authorizes a live stream in place, identified by a server-issued stream ID, so the stream never breaks. A stream that misses its deadline is paused rather than ended: it delivers nothing but reminders until the client re-authorizes it, and then resumes. It ends at its expiry, which the client requests with `expiresAt` within the server's maximum. Every addition is optional and negotiated per stream, and extensions can reuse the same notifications for their own subscriptions.
+This SEP introduces additive changes to the authorization SEP and extend it by proposing the following changes
+
+- Tie each stream to a server issued `streamId`
+- Let clients keep their streams alive by fulfilling the authorization challenge presented by the server
+- Limit the lifetime of a subscription by having a negotiation between server and client
+- Introduces a concept of paused stream in case authorization is lost but expiry hasn't been hit yet
+- Enable lifecycle notifications allowing clients to
+  - Receive reminders when their authorization (like lifetime of the token) is about to run out
+  - Receive reminder when the subcription is about to expire
+  - Be notified when they lose access to one of the subscribed resources
+  - Receive notification if the server thinks that the client missed notifications due to some reason (like a server lapse) thus allowing clients to sync
+
+The protocol adds all of these as optional and each is negotiated at a per stream level.
 
 ## Motivation
 
 - **A reconnection per token lifetime.** Under the lifetime SEP, every stream ends at every authorization deadline. Streamable HTTP cannot resume a stream ("Resumable SSE streams via `Last-Event-ID` are not supported"; [Streamable HTTP: Receiving Messages][http-receiving]), so each end costs a gap and a resynchronization, and the server rebuilds the stream's upstream registrations. With tokens that last minutes, streams churn constantly.
 - **Late clients lose their streams.** A client that is asleep, whose authorization server is briefly unavailable, or whose user is still completing step-up authentication, misses the deadline and has to start over.
 - **Loss of access is silent.** The lifetime SEP stops notifications for a listed resource the principal can no longer read. An agent waiting for a change to that resource cannot tell "no changes" from "no access", and waits indefinitely.
-- **Streams have no chosen lifetime.** A client cannot ask for a stream that ends when it no longer needs it, and a server with a maximum stream lifetime cannot say so.
+- **Streams have no chosen lifetime.** A client cannot ask for a stream that ends when it no longer needs it, and a server with a maximum stream lifetime cannot say so. The only real option today is for client or server to issue a cancellation. But cancellation is used for a wide varity of scenarios.
 
 Deployed systems handle all four. Microsoft Graph repeats `reauthorizationRequired` lifecycle notifications before a token expires, reauthorizes subscriptions in place, pauses delivery while a subscription is unauthorized, sends `subscriptionRemoved` and `missed`, and takes a client-chosen `expirationDateTime` ([Graph lifecycle notifications][graph-lifecycle]). Google Drive's changes feed reports a file that the user lost access to as a change with `removed: true` ([Drive API: changes][drive-changes]).
 
@@ -39,7 +51,7 @@ As in the lifetime SEP, every signal this specification adds is a JSON-RPC messa
 
 ### 2. Expiry
 
-A client MAY include `expiresAt` in its `subscriptions/listen` request: the time after which it no longer wants the stream. Omitting it leaves the expiry to the server; requests from clients that predate this specification never carry it. A stream with no expiry still has an authorization deadline.
+A client MAY include `expiresAt` in its `subscriptions/listen` request: the time after which it no longer wants the stream. Omitting it leaves the expiry to the server; requests from clients that predate this specification never carry it. **A stream with no expiry still has an authorization deadline.**
 
 1. When the request includes `expiresAt`, the server either uses that expiry or rejects the request; it MUST NOT shorten or extend it. It MUST reject the request with `-32602` (Invalid params) if the expiry is not in the future, or is later than the server's maximum stream lifetime allows; in the second case, `data.maxExpiresAt` gives the latest expiry the server would accept. When the request omits `expiresAt`, the server sets the expiry to its maximum, or leaves the stream without one.
 2. The acknowledgment MUST include `expiresAt` when the stream has an expiry.
@@ -60,7 +72,7 @@ A client MUST NOT rely on lifecycle notifications alone. It SHOULD also schedule
 | Field                                             | Type        | Description                                                                                                  |
 | ------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------ |
 | `type`                                            | string      | What happened: `reauthorization_required`, `access_reduced`, `missed`, or a type defined elsewhere (rule 1). |
-| `lastUpdatedAt`                                   | string      | The stream's `lastUpdatedAt` when the notification was written (rule 3).                                     |
+| `lastUpdatedAt`                                   | string      | The stream's `lastUpdatedAt` as it stands when the notification is sent (rule 3).                            |
 | `_meta["io.modelcontextprotocol/subscriptionId"]` | `RequestId` | The stream the notification applies to, as on every notification delivered on a stream.                      |
 
 | `type`                     | Added fields                | Sent                                                                                                            |
@@ -70,8 +82,8 @@ A client MUST NOT rely on lifecycle notifications alone. It SHOULD also schedule
 | `missed`                   | none                        | When notifications may have been dropped ([section 3.5](#35-missed-notifications))                              |
 
 1. Clients MUST ignore lifecycle notifications of a `type` they do not recognize. Later revisions, extensions, and individual servers may define more types; for example, a warning that a key used to encrypt notifications is about to expire, or a server's own warning that the principal is close to a quota. Unprefixed types are reserved for this specification and its later revisions. Other types MUST use a prefixed name, as `_meta` keys do: a reverse-DNS prefix owned by whoever defines the type, such as `com.example/quota_warning`, with prefixes whose second label is `modelcontextprotocol` or `mcp` reserved for MCP ([Overview: `_meta`][overview-meta]).
-2. A client MUST ignore a lifecycle notification whose `lastUpdatedAt` is earlier than that of the latest update result it has received for the stream. Such a notification describes a state that the update has replaced.
-3. The acknowledgment, update results, and lifecycle notifications carry `lastUpdatedAt`: the time of the stream's most recent change of expiry, authorization deadline, authorization, or acknowledged entries. Each change MUST give the stream a later `lastUpdatedAt` than it had before, so servers use enough precision, such as milliseconds, to keep changes apart.
+2. A client MUST ignore a reminder ([section 3.3](#33-reminders)) whose `lastUpdatedAt` is earlier than that of an update result it has received for the stream: the update has replaced the deadline the reminder reports. Likewise, when an update result's `lastUpdatedAt` is earlier than that of a reminder the client has received, the reminder's `authorizedUntil` stays current. A client never ignores `access_reduced` or `missed` this way, because an update undoes neither.
+3. The acknowledgment, update results, and lifecycle notifications carry `lastUpdatedAt`: the time of the stream's most recent change of expiry, authorization deadline, authorization, or acknowledged entries. It does not change as notifications are delivered. Each change MUST give the stream a later `lastUpdatedAt` than it had before, so servers use enough precision, such as milliseconds, to keep changes apart.
 4. Lifecycle notifications MUST NOT carry tokens or other credentials. The consent rules of the lifetime SEP ([Authorization Lifetime, section 7](https://github.com/RamjotSingh/modelcontextprotocol/blob/sep/authorization-lifetime/seps/0000-authorization-lifetime-for-subscription-streams.md#7-user-consent-and-safety)) apply to them as they do to its error: no lifecycle notification by itself starts interactive authorization.
 
 #### 3.3 Reminders
@@ -115,7 +127,7 @@ An `access_reduced` notification tells the client that the stream no longer carr
 **Server rules**
 
 1. When a stream's authorization no longer permits some of its acknowledged entries, the server removes them from the stream, as the lifetime SEP requires. On a stream whose acknowledgment includes `lifecycle`, it MUST send one `access_reduced` notification listing them.
-2. Removal is permanent. If access returns, the server does not resume delivering a removed entry.
+2. **Removal is permanent. If access returns, the server does not resume delivering a removed entry.**
 3. The notification MUST NOT reveal when a removed entry changed. A server that learns of the loss while processing a change to that entry, rather than from an access-change signal or from the client's own update, MUST hold the notification until it next sends a reminder or an update result, and send it then. The removal changes the stream's `lastUpdatedAt` only when the notification is sent. If the stream ends first, the client learns of the removal when it next asks for those entries: the lifetime SEP refuses a filter that lists them, and names them in `data.denied` ([Authorization Lifetime, section 3](https://github.com/RamjotSingh/modelcontextprotocol/blob/sep/authorization-lifetime/seps/0000-authorization-lifetime-for-subscription-streams.md#3-stream-lifetime), rule 5).
 4. When no acknowledged entry remains, the server ends the stream with reason `revoked`, as the lifetime SEP requires, no earlier than rule 3 would allow it to send the notification.
 5. A failed or unavailable access check is not a loss of access. The server drops the affected notification and keeps the entry.
@@ -228,7 +240,7 @@ export interface SubscriptionLifecycleParamsBase extends NotificationParams {
    * name, as _meta keys do. Clients ignore types they do not recognize.
    */
   type: string;
-  /** The stream's lastUpdatedAt when this notification was written. */
+  /** The stream's lastUpdatedAt as it stands when this notification is sent. */
   lastUpdatedAt: string;
 }
 
@@ -571,6 +583,10 @@ A single notice can be lost in a busy client. Graph repeats `reauthorizationRequ
 
 Graph also pauses a subscription whose authorization has lapsed, until the application acts: delivery "pauses, until you take the required action". A client that is late, because it was asleep, its authorization server was unavailable, or its user took time to step up, re-authorizes the same stream instead of opening a new one. Unlike Graph, reminders continue during the pause, because on an open stream they cost almost nothing. A paused stream ends only at its expiry, which the client chose within the server's maximum, so the expiry is also the limit on pausing. It costs what an idle stream costs, and exists only while the client keeps the connection open. Streams that cannot resume still end at the deadline, because to their clients a paused stream would look like a quiet one.
 
+### Order reminders and update results by `lastUpdatedAt`
+
+An update result returns on the update's own request, while lifecycle notifications travel on the stream, so the two can arrive in either order: a reminder sent just before an update can arrive after its result, and a reminder about a change made just after an update can arrive before it. `lastUpdatedAt` versions the stream's state so that the client can tell which is current. It changes only with that state, never with each notification, because notifications on one stream already arrive in order. Only reminders report state that an update replaces; `access_reduced` and `missed` report events that an update does not undo, so a client acts on them whenever they arrive.
+
 ### Remove listed entries one way, without revealing timing
 
 An agent that listed a resource is waiting for it. If its notifications stop without a word, it cannot tell "no changes" from "no access", so the server says once which entries it removed; the acknowledgment promised them, and `access_reduced` withdraws that promise. Removal is one way. Resuming when access returns would need the server to keep evaluating a resource the principal cannot see, permissions that flip back and forth would produce a run of notices, and the gap between would need a resynchronization anyway. Graph works the same way: after `subscriptionRemoved`, "you need to recreate the subscription".
@@ -626,7 +642,7 @@ Updating in place costs one request per stream per authorization lifetime, plus 
 
 ## Reference Implementation
 
-A [prototype][prototype] (branch `poc/subscription-lifecycle` of a TypeScript SDK fork) is the prototype of [Authorization Lifetime for Subscription Streams][sep-lifetime] plus one commit, so [the difference between the two branches][prototype-diff] is exactly this SEP. It implements stream IDs, `subscriptions/update` routed by `Mcp-Name`, reminders on the default schedule with jitter, pausing and resuming with held notifications, `access_reduced` under the timing rule, `missed`, and `expiresAt`. Its client exposes the new acknowledgment fields, `update()`, and lifecycle notifications, dropping stale ones. Its self-verifying demo, separate from the lifetime SEP's, uses the default reminder schedule with jitter, and exercises a reminder answered by an update, a missed deadline followed by a pause and a late update, `access_reduced`, a step-up through the `403` challenge, and expiry; it passes with 20-second tokens. It also runs today's behavior beside the proposals, through a second server endpoint without them, and writes a wire log grouped by scenario: current and proposed clients with current and proposed servers, each request with its response, and every line the proposals add marked. Routing updates across several server instances is not yet demonstrated.
+A [prototype][prototype] (branch `poc/subscription-lifecycle` of a TypeScript SDK fork) is the prototype of [Authorization Lifetime for Subscription Streams][sep-lifetime] plus one commit, so [the difference between the two branches][prototype-diff] is exactly this SEP. It implements stream IDs, `subscriptions/update` routed by `Mcp-Name`, reminders on the default schedule with jitter, pausing and resuming with held notifications, `access_reduced` under the timing rule, `missed`, and `expiresAt`. Its client exposes the new acknowledgment fields, `update()`, and lifecycle notifications, dropping stale reminders. Its self-verifying demo, separate from the lifetime SEP's, uses the default reminder schedule with jitter, and exercises a reminder answered by an update, a missed deadline followed by a pause and a late update, `access_reduced`, a step-up through the `403` challenge, and expiry; it passes with 20-second tokens. It also runs today's behavior beside the proposals, through a second server endpoint without them, and writes a wire log grouped by scenario: current and proposed clients with current and proposed servers, each request with its response, and every line the proposals add marked. Routing updates across several server instances is not yet demonstrated.
 
 ## Testing Plan
 
@@ -654,7 +670,7 @@ Conformance scenarios, for the [conformance repository][conformance]:
 
 1. When the acknowledgment includes `streamId`, updates the stream before `authorizedUntil`, or while it is paused, setting `Mcp-Name` to the stream ID, and uses one refresh for all streams that share the token.
 2. After an update fails with `-32602` carrying none of `unsupportedFields`, `maxExpiresAt`, and `denied`, or with `-32601`, re-establishes the stream and resynchronizes.
-3. Ignores a lifecycle notification whose `lastUpdatedAt` is earlier than that of its latest update result, and one whose `type` it does not recognize.
+3. Of a reminder and an update result, applies the one with the later `lastUpdatedAt`, whichever arrives first; never ignores `access_reduced` or `missed` because of `lastUpdatedAt`; and ignores a lifecycle notification whose `type` it does not recognize.
 4. Does not start interactive authorization because of a lifecycle notification alone.
 
 **Client, recommended**
