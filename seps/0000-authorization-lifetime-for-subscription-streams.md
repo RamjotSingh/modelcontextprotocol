@@ -101,14 +101,14 @@ A stream that ends for authorization reasons ends with one final message: the `A
 
 3. While it can still return an HTTP status, a server rejects a request that its token does not authorize with `401` or `403`, as the Authorization specification requires. Once the HTTP response has been committed, it uses `AuthorizationEnded` instead, even if it has not yet sent the acknowledgment. A server MUST NOT use `AuthorizationEnded` when it can still return an HTTP status. The refusal of a filter that is not wholly permitted ([section 3](#3-stream-lifetime), rule 5) does not depend on this: it is a JSON-RPC error, which the server sends instead of the acknowledgment whether or not the response has been committed.
 4. A server MUST NOT send `AuthorizationEnded` in response to a request whose protocol version predates the revision that defines it. For such requests it closes the stream without a response, which those clients treat as an unexpected disconnect. Section 3 still applies.
-5. A server MUST NOT send `notifications/cancelled` for a stream it ends this way. The error response is the end signal on every transport, as the completion result is. The Cancellation page currently says otherwise; a separate pull request fixes it ([#3348][issue-3348]).
+5. A server MUST NOT send `notifications/cancelled` for a stream it ends this way. The error response is the end signal on every transport, as the completion result is. The Cancellation page currently says otherwise; a fix is pending ([#3348][issue-3348]).
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 7,
   "error": {
-    "code": -32023,
+    "code": -32028,
     "message": "Authorization ended",
     "data": { "reason": "token_expiry" }
   }
@@ -161,7 +161,7 @@ Additions to `schema/draft/schema.ts`:
  *
  * @category Errors
  */
-export const AUTHORIZATION_ENDED = -32023;
+export const AUTHORIZATION_ENDED = -32028;
 
 /**
  * Why a stream's authorization ended or needs attention. Clients treat
@@ -220,11 +220,11 @@ export interface SubscriptionDeniedError extends Omit<
 }
 ```
 
-`-32023` is the next unallocated code in the range reserved for the MCP specification ([Overview: Error Codes][overview-errors]); the final number is assigned when the SEP is accepted. `SubscriptionDeniedError` uses the existing `-32602` (Invalid params), which every protocol version defines, as `resources/read` does for a resource that does not exist ([Resources: Error Handling][resources-errors]). The documentation of `InvalidParamsError` adds subscriptions to the contexts it lists.
+`-32028` is provisional: it is the first code in the range reserved for the MCP specification ([Overview: Error Codes][overview-errors]) after the five that [SEP-3415][sep-3415] requests, and the final number is assigned when the SEP is accepted. `SubscriptionDeniedError` uses the existing `-32602` (Invalid params), which every protocol version defines, as `resources/read` does for a resource that does not exist ([Resources: Error Handling][resources-errors]). The documentation of `InvalidParamsError` adds subscriptions to the contexts it lists.
 
 ### 9. Guidance for extensions (non-normative)
 
-An extension can define a long-lived request of its own, such as `events/stream` in the Events design sketch of the Triggers & Events Working Group, which delivers the events of one subscription on one request ([Events design sketch: Push-Based Delivery][events-push]). Such a request outlives its token as `subscriptions/listen` does, and the extension can apply this SEP to it:
+An extension can define a long-lived request of its own, such as `events/stream` in the Events extension ([SEP-3415][sep-3415]), which delivers the events of one subscription on one request. Such a request outlives its token as `subscriptions/listen` does, and the extension can apply this SEP to it:
 
 - Report the authorization deadline when the request starts, as `authorizedUntil` does in the acknowledgment.
 - At the deadline, or when the authorization is revoked, end the request as [section 5](#5-ending-a-stream-for-authorization-reasons) describes: with `AuthorizationEnded` and its reason as the final response. Clients then handle the end of every long-lived request in the same way.
@@ -240,7 +240,7 @@ A subscription that the server holds without an open request, such as a webhook 
 - **Cancellation** ([`basic/patterns/cancellation`][cancel-page]): no change in this SEP, which depends on the fix for [#3348][issue-3348]: only clients send `notifications/cancelled`, and a server ends a stream by responding to it.
 - **Authorization** (`basic/authorization`): add a "Long-lived requests" section: the `401` rule applies until the response is committed, after which streams end with `AuthorizationEnded`; and the consent rules of [section 7](#7-user-consent-and-safety).
 - **Streamable HTTP** (`basic/transports/streamable-http`): in Receiving Messages, state that the `AuthorizationEnded` error and the refusal of a filter that is not wholly permitted are sent with HTTP status `200`, and that `401` and `403` remain the Authorization specification's token errors.
-- **Overview** (`basic/index`): add `-32023 AuthorizationEnded` to the error code table.
+- **Overview** (`basic/index`): add `-32028 AuthorizationEnded` to the error code table.
 - **Schema** and **Changelog**: the additions above, and an entry under Major changes, because servers gain a new lifetime requirement.
 
 ### 11. Examples
@@ -287,7 +287,7 @@ A client that does nothing sees stream 7 end at 17:00 with `AuthorizationEnded` 
   "jsonrpc": "2.0",
   "id": 7,
   "error": {
-    "code": -32023,
+    "code": -32028,
     "message": "Authorization ended",
     "data": { "reason": "revoked" }
   }
@@ -369,7 +369,7 @@ MCP represents points in time as RFC 3339 timestamps, such as `createdAt` and `l
 - **Carry `WWW-Authenticate` challenges in the error.** See above.
 - **Acknowledge the permitted part of a filter.** The client may not notice what is missing, and cannot tell why. See [Refuse a filter that is not wholly permitted](#refuse-a-filter-that-is-not-wholly-permitted).
 - **Refuse a filter with HTTP `403`, or with a new error code.** See the same section.
-- **Reuse `Forbidden` (`-32012`) from the Events design sketch.** The sketch uses one code both to refuse a subscription that is not permitted and to end one whose access was revoked, and asks later proposals to reuse its codes rather than define overlapping ones ([Events design sketch: Error Codes][events-errors], [Events design sketch: Authorization][events-authz]). Its codes lie in the sub-range that the specification keeps for legacy codes, where new codes "MUST NOT be allocated" and receivers "MUST NOT assume any specific meaning" ([Overview: Error Codes][overview-errors]). One code would also merge two signals that do different jobs here: a refusal names the entries that are not permitted, so that the client can ask again without them, and the end of a stream gives a reason that tells the client whether to refresh, involve the user, or stop. [Section 9](#9-guidance-for-extensions-non-normative) describes how an extension's long-lived requests can use this SEP's signals instead.
+- **Reuse `Forbidden` from the Events extension.** [SEP-3415][sep-3415] requests `Forbidden` (`-32024`) as a general-purpose code for reuse across MCP, and uses it both to refuse a subscription that is not permitted and to end one whose access was revoked. One code would merge two signals that do different jobs here: a refusal names the entries that are not permitted, so that the client can ask again without them, and the end of a stream gives a reason that tells the client whether to refresh, involve the user, or stop. A new code also exists only from the revision that defines it, so a server could not send it to the clients of earlier versions that this SEP's refusal has to reach; SEP-3415 itself leaves open whether its codes should be `InvalidParams` with typed `data` instead. [Section 9](#9-guidance-for-extensions-non-normative) describes how an extension's long-lived requests can use this SEP's signals instead.
 
 ## Backward Compatibility
 
@@ -401,7 +401,7 @@ Per-notification access checks cost what the same checks cost for requests, and 
 
 A [prototype][prototype] implements this SEP alone, as one commit on a fork of the TypeScript SDK (branch `poc/authorization-lifetime`); the prototype of [Subscription Lifecycle][sep-lifecycle] is one further commit on top of it. Its server records each stream's authorization deadline and reports it as `authorizedUntil`. When a stream opens, the server checks each entry of the filter through a pluggable access check, and refuses the request with `-32602` and `data.denied` if any entry is not permitted; it then checks every notification through the same check. It stops delivering at the deadline and ends streams with `AuthorizationEnded`, or without a response for clients on older protocol versions. Its client exposes `authorizedUntil` and the end reason. A self-verifying demo that uses only this SEP runs against a toy authorization server issuing 20-second or two-minute tokens. In it, two streams are re-established before their deadline with one refresh; notifications are filtered one by one; a stream that loses its only entry ends at the deadline, not at the change; streams end with each reason; a stream reopened with a resource the user can no longer read is refused, naming that resource, and is reopened without it; step-up follows only a `403`; the client does not prompt when access is gone for good; and an older client's stream closes without a response. The demo also runs today's behavior beside the proposal, through a second server endpoint without it, and writes a wire log grouped by scenario: current and proposed clients with current and proposed servers, each request with its response, and every line the proposal adds marked. The server tests cover each server item in the Testing Plan below, with revocation signalled through a control API instead of introspection, and the demo exercises each client item.
 
-The SDK has no draft protocol revision, so the prototype treats a request as being at the draft version when its client capabilities include `experimental["io.modelcontextprotocol/subscription-lifetime"]`, and sends `-32023` only then.
+The SDK has no draft protocol revision, so the prototype treats a request as being at the draft version when its client capabilities include `experimental["io.modelcontextprotocol/subscription-lifetime"]`, and sends `-32028` only then.
 
 ## Testing Plan
 
@@ -410,8 +410,8 @@ Conformance scenarios, for the [conformance repository][conformance]:
 **Server, required**
 
 1. Includes `authorizedUntil` in the acknowledgment when the token's expiry is known, no later than that expiry.
-2. Writes no notifications after the token's expiry, within a stated clock tolerance, and ends the stream then with `-32023` and reason `token_expiry`, without sending `notifications/cancelled`.
-3. Rejects a new `subscriptions/listen` request carrying an expired token with HTTP `401`, not with `-32023`.
+2. Writes no notifications after the token's expiry, within a stated clock tolerance, and ends the stream then with `-32028` and reason `token_expiry`, without sending `notifications/cancelled`.
+3. Rejects a new `subscriptions/listen` request carrying an expired token with HTTP `401`, not with `-32028`.
 4. For a request that declares an older protocol version, writes nothing after the token's expiry, and closes the stream without a response.
 5. Drops a notification about a resource the principal cannot read, and keeps the stream open while other acknowledged entries remain.
 6. When the principal loses access to every listed resource, ends the stream with reason `revoked`.
@@ -449,7 +449,7 @@ Each question carries the author's proposed answer.
 [issue-3348]: https://github.com/modelcontextprotocol/modelcontextprotocol/issues/3348
 [overview-auth]: https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth
 [overview-errors]: https://modelcontextprotocol.io/specification/2026-07-28/basic/index#error-codes
-[overview-resulttype]: https://modelcontextprotocol.io/specification/2026-07-28/basic/index#resulttype
+[overview-resulttype]: https://modelcontextprotocol.io/specification/2026-07-28/basic/index#result-responses
 [sep-2663-notifications]: https://modelcontextprotocol.io/seps/2663-tasks-extension#task-status-notifications
 [ts-listen-router]: https://github.com/modelcontextprotocol/typescript-sdk/blob/main/packages/server/src/server/listenRouter.ts
 [ext-tasks-11]: https://github.com/modelcontextprotocol/ext-tasks/issues/11
@@ -466,6 +466,4 @@ Each question carries the author's proposed answer.
 [rfc9110-date]: https://www.rfc-editor.org/rfc/rfc9110#section-6.6.1
 [prototype]: https://github.com/RamjotSingh/typescript-sdk/blob/poc/authorization-lifetime/AUTHORIZATION-LIFETIME-PROTOTYPE.md
 [sep-lifecycle]: https://github.com/RamjotSingh/modelcontextprotocol/blob/sep/subscription-lifecycle/seps/0000-subscription-lifecycle.md
-[events-push]: https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/main/docs/design-sketch-proposal.md#push-based-delivery
-[events-errors]: https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/main/docs/design-sketch-proposal.md#error-codes
-[events-authz]: https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/main/docs/design-sketch-proposal.md#authorization
+[sep-3415]: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3415
