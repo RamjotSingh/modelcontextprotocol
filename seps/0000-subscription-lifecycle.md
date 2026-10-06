@@ -12,7 +12,7 @@
 
 [Authorization Lifetime for Subscription Streams][sep-lifetime] ends a `subscriptions/listen` stream at each authorization deadline. On its own, that costs every stream a reconnection, a gap, and a resynchronization per token lifetime, and tells a client nothing when it loses access to one of the resources it listed.
 
-This SEP introduces additive changes to the authorization SEP and extend it by proposing the following changes
+This SEP introduces additive changes to the authorization SEP and extends it by proposing the following changes:
 
 - Tie each stream to a server issued `streamId`
 - Let clients keep their streams alive by fulfilling the authorization challenge presented by the server
@@ -20,7 +20,7 @@ This SEP introduces additive changes to the authorization SEP and extend it by p
 - Introduces a concept of paused stream in case authorization is lost but expiry hasn't been hit yet
 - Enable lifecycle notifications allowing clients to
   - Receive reminders when their authorization (like lifetime of the token) is about to run out
-  - Receive reminder when the subcription is about to expire
+  - Receive reminder when the subscription is about to expire
   - Be notified when they lose access to one of the subscribed resources
   - Receive notification if the server thinks that the client missed notifications due to some reason (like a server lapse) thus allowing clients to sync
 
@@ -31,7 +31,7 @@ The protocol adds all of these as optional and each is negotiated at a per strea
 - **A reconnection per token lifetime.** Under the lifetime SEP, every stream ends at every authorization deadline. Streamable HTTP cannot resume a stream ("Resumable SSE streams via `Last-Event-ID` are not supported"; [Streamable HTTP: Receiving Messages][http-receiving]), so each end costs a gap and a resynchronization, and the server rebuilds the stream's upstream registrations. With tokens that last minutes, streams churn constantly.
 - **Late clients lose their streams.** A client that is asleep, whose authorization server is briefly unavailable, or whose user is still completing step-up authentication, misses the deadline and has to start over.
 - **Loss of access is silent.** The lifetime SEP stops notifications for a listed resource the principal can no longer read. An agent waiting for a change to that resource cannot tell "no changes" from "no access", and waits indefinitely.
-- **Streams have no chosen lifetime.** A client cannot ask for a stream that ends when it no longer needs it, and a server with a maximum stream lifetime cannot say so. The only real option today is for client or server to issue a cancellation. But cancellation is used for a wide varity of scenarios.
+- **Streams have no chosen lifetime.** A client cannot ask for a stream that ends when it no longer needs it, and a server with a maximum stream lifetime cannot say so. The only real option today is for the client to cancel the stream, or the server to end it. But cancellation is used for a wide variety of scenarios.
 
 Deployed systems handle all four. Microsoft Graph repeats `reauthorizationRequired` lifecycle notifications before a token expires, reauthorizes subscriptions in place, pauses delivery while a subscription is unauthorized, sends `subscriptionRemoved` and `missed`, and takes a client-chosen `expirationDateTime` ([Graph lifecycle notifications][graph-lifecycle]). Google Drive's changes feed reports a file that the user lost access to as a change with `removed: true` ([Drive API: changes][drive-changes]).
 
