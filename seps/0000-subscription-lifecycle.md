@@ -20,7 +20,6 @@ This SEP introduces additive changes to the authorization SEP and extends it by 
 - Introduces a concept of paused stream in case authorization is lost but expiry hasn't been hit yet
 - Enable lifecycle notifications allowing clients to
   - Receive reminders when their authorization (like lifetime of the token) is about to run out
-  - Receive reminder when the subscription is about to expire
   - Be notified when they lose access to one of the subscribed resources
   - Receive notification if the server thinks that the client missed notifications due to some reason (like a server lapse) thus allowing clients to sync
 
